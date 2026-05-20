@@ -5,6 +5,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,14 +17,21 @@
     They deliberately override the native raylib.dll that may come from the NuGet package.
   -->
   <ItemGroup>
-    <None Include="native\win-x64\raylib.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('native\win-x64\raylib.dll')" />
-    <None Include="native\win-x64\libEGL.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('native\win-x64\libEGL.dll')" />
-    <None Include="native\win-x64\libGLESv2.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('native\win-x64\libGLESv2.dll')" />
-    <None Include="native\win-x64\d3dcompiler_47.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('native\win-x64\d3dcompiler_47.dll')" />
+    <AngleNativeFile Include="native\win-x64\raylib.dll" Condition="Exists('native\win-x64\raylib.dll')" />
+    <AngleNativeFile Include="native\win-x64\libEGL.dll" Condition="Exists('native\win-x64\libEGL.dll')" />
+    <AngleNativeFile Include="native\win-x64\libGLESv2.dll" Condition="Exists('native\win-x64\libGLESv2.dll')" />
+    <AngleNativeFile Include="native\win-x64\d3dcompiler_47.dll" Condition="Exists('native\win-x64\d3dcompiler_47.dll')" />
+    <AngleNativeFile Include="native\win-x64\build-info.txt" Condition="Exists('native\win-x64\build-info.txt')" />
   </ItemGroup>
 
-  <Target Name="VerifyAngleNativeFiles" BeforeTargets="Build" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
-    <Message Importance="High" Text="Using native raylib ANGLE files from src/RaylibAngleSample/native/win-x64 when present." />
+  <Target Name="CopyAngleNativeFilesAfterBuild" AfterTargets="CopyFilesToOutputDirectory" Condition="'@(AngleNativeFile)' != ''">
+    <Message Importance="High" Text="Copying native raylib ANGLE files to $(OutDir)." />
+    <Copy SourceFiles="@(AngleNativeFile)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="false" OverwriteReadOnlyFiles="true" />
+  </Target>
+
+  <Target Name="CopyAngleNativeFilesAfterPublish" AfterTargets="Publish" Condition="'@(AngleNativeFile)' != '' and '$(PublishDir)' != ''">
+    <Message Importance="High" Text="Copying native raylib ANGLE files to $(PublishDir)." />
+    <Copy SourceFiles="@(AngleNativeFile)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="false" OverwriteReadOnlyFiles="true" />
   </Target>
 
 </Project>

@@ -62,6 +62,7 @@ jobs:
           "VCPKG_DEFAULT_TRIPLET=x64-windows" | Add-Content -Path $env:GITHUB_ENV
 
       - name: Restore vcpkg cache
+        id: restore-vcpkg-cache
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -86,7 +87,8 @@ jobs:
           C:\vcpkg\vcpkg.exe install angle:x64-windows --vcpkg-root C:\vcpkg
 
       - name: Save vcpkg cache
-        if: success()
+        if: success() && steps.restore-vcpkg-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: |

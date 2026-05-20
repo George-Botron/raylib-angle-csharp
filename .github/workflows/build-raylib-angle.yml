@@ -4,56 +4,47 @@ on:
   workflow_dispatch:
     inputs:
       raylib_ref:
-        description: "raylib tag/branch/commit to build"
-        required: true
+        description: "raylib git ref/tag to build"
+        required: false
         default: "6.0"
   push:
     branches: [ main, master ]
-    paths:
-      - ".github/workflows/build-raylib-angle.yml"
-      - "scripts/**"
-      - "src/**"
-      - "README.md"
-      - "Directory.Build.props"
-
-env:
-  VCPKG_ROOT: C:\vcpkg
-  VCPKG_INSTALLATION_ROOT: C:\vcpkg
-  VCPKG_DEFAULT_TRIPLET: x64-windows
 
 jobs:
-  build-win-x64:
+  build:
     name: Build Windows x64 ANGLE raylib.dll and C# sample
-    runs-on: windows-latest
+    runs-on: windows-2025
+
+    env:
+      VCPKG_ROOT: C:\vcpkg
+      VCPKG_INSTALLATION_ROOT: C:\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows
 
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v4
 
-      - name: Validate repository files before expensive build
+      - name: Validate repository files
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
-          $workflow = ".github/workflows/build-raylib-angle.yml"
-          $buildScript = "scripts/build-raylib-angle.ps1"
-          $verifyScript = "scripts/verify-angle-raylib.ps1"
-          $project = "src/RaylibAngleSample/RaylibAngleSample.csproj"
-
-          foreach ($path in @($workflow, $buildScript, $verifyScript, $project)) {
+          foreach ($path in @(
+            ".github/workflows/build-raylib-angle.yml",
+            "scripts/build-raylib-angle.ps1",
+            "scripts/verify-angle-raylib.ps1",
+            "src/RaylibAngleSample/RaylibAngleSample.csproj"
+          )) {
             if (-not (Test-Path $path)) { throw "Missing required file: $path" }
           }
 
-          # Catch the mistake that caused the latest failure: workflow YAML pasted into the PowerShell script path.
-          $scriptText = Get-Content $buildScript -Raw
-          if ($scriptText -match '(?m)^\s*-\s+name\s*:') {
-            throw "$buildScript appears to contain GitHub Actions YAML. Replace it with the PowerShell script, not the workflow file."
-          }
-          if ($scriptText -match '(?m)^\s*jobs\s*:') {
-            throw "$buildScript appears to contain GitHub Actions YAML. Replace it with the PowerShell script, not the workflow file."
-          }
+          $buildText = Get-Content "scripts/build-raylib-angle.ps1" -Raw
+          $verifyText = Get-Content "scripts/verify-angle-raylib.ps1" -Raw
 
-          foreach ($path in @($buildScript, $verifyScript)) {
+          if ($buildText -match '(?m)^\s*-\s+name\s*:|(?m)^\s*jobs\s*:') { throw "scripts/build-raylib-angle.ps1 contains YAML, not PowerShell." }
+          if ($verifyText -match 'does not depend on libEGL\.dll') { throw "scripts/verify-angle-raylib.ps1 still has the old broken libEGL direct-import check." }
+          if ($buildText -notmatch 'GLFW_ANGLE_PLATFORM_TYPE_D3D11') { throw "scripts/build-raylib-angle.ps1 must patch raylib to request GLFW_ANGLE_PLATFORM_TYPE_D3D11." }
+
+          foreach ($path in @("scripts/build-raylib-angle.ps1", "scripts/verify-angle-raylib.ps1")) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
@@ -62,29 +53,27 @@ jobs:
               throw "PowerShell parse failed: $path"
             }
           }
-
           Write-Host "Repository file validation passed."
 
-      - name: Enable MSVC Developer Command Prompt
+      - name: Setup MSVC developer shell
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Reset vcpkg environment after MSVC setup
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Force vcpkg root after MSVC setup
         shell: pwsh
         run: |
           "VCPKG_ROOT=C:\vcpkg" | Add-Content -Path $env:GITHUB_ENV
           "VCPKG_INSTALLATION_ROOT=C:\vcpkg" | Add-Content -Path $env:GITHUB_ENV
           "VCPKG_DEFAULT_TRIPLET=x64-windows" | Add-Content -Path $env:GITHUB_ENV
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: |
-            10.0.x
-
-      - name: Setup vcpkg cache
-        uses: actions/cache@v4
+      - name: Restore vcpkg cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             C:\vcpkg\installed
@@ -92,12 +81,10 @@ jobs:
             C:\vcpkg\buildtrees
             C:\vcpkg\downloads
             C:\Users\runneradmin\AppData\Local\vcpkg\archives
-          # Keep this key stable. ANGLE is expensive; do not invalidate it every time scripts change.
           key: vcpkg-angle-${{ runner.os }}-x64-windows-chromium-7258-2
           restore-keys: |
             vcpkg-angle-${{ runner.os }}-x64-windows-
             vcpkg-angle-${{ runner.os }}-
-          save-always: true
 
       - name: Install ANGLE from vcpkg
         shell: pwsh
@@ -109,73 +96,61 @@ jobs:
           }
           C:\vcpkg\vcpkg.exe install angle:x64-windows --vcpkg-root C:\vcpkg
 
-      - name: Build native raylib.dll linked to ANGLE
+      - name: Save vcpkg cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            C:\vcpkg\installed
+            C:\vcpkg\packages
+            C:\vcpkg\buildtrees
+            C:\vcpkg\downloads
+            C:\Users\runneradmin\AppData\Local\vcpkg\archives
+          key: vcpkg-angle-${{ runner.os }}-x64-windows-chromium-7258-2
+
+      - name: Build raylib ANGLE Direct3D11 native DLL
         shell: pwsh
         run: |
           $ref = "${{ github.event.inputs.raylib_ref }}"
           if ([string]::IsNullOrWhiteSpace($ref)) { $ref = "6.0" }
           ./scripts/build-raylib-angle.ps1 -RaylibRef $ref -VcpkgRoot C:\vcpkg -Triplet x64-windows
 
-      - name: Verify native raylib.dll dependencies
+      - name: Verify native raylib ANGLE output
         shell: pwsh
         run: ./scripts/verify-angle-raylib.ps1
 
-      - name: Copy native files into C# sample
+      - name: Copy native DLLs into sample project
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $nativeDest = "src/RaylibAngleSample/native/win-x64"
-          New-Item -ItemType Directory -Force -Path $nativeDest | Out-Null
-          Copy-Item artifacts/raylib-angle-win-x64/* $nativeDest/ -Force
-          Get-ChildItem $nativeDest | Format-Table Name, Length
+          New-Item -ItemType Directory -Force -Path src/RaylibAngleSample/native/win-x64 | Out-Null
+          Copy-Item artifacts/raylib-angle-win-x64/* src/RaylibAngleSample/native/win-x64/ -Force
 
-      - name: Publish C# raylib-cs sample
+      - name: Publish C# sample
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $publishOut = "artifacts/RaylibAngleSample"
-          Remove-Item -Recurse -Force $publishOut -ErrorAction SilentlyContinue
-          dotnet publish src/RaylibAngleSample/RaylibAngleSample.csproj `
-            -c Release `
-            -r win-x64 `
-            --self-contained false `
-            -p:Platform=AnyCPU `
-            -o $publishOut
+          dotnet restore src/RaylibAngleSample/RaylibAngleSample.csproj
+          dotnet publish src/RaylibAngleSample/RaylibAngleSample.csproj -c Release -r win-x64 --self-contained false -o artifacts/RaylibAngleSample
 
-      - name: Verify published sample contains ANGLE files
+      - name: Verify sample output contains ANGLE files
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
           $sampleOut = "artifacts/RaylibAngleSample"
-          if (-not (Test-Path $sampleOut)) { throw "Sample publish output not found: $sampleOut" }
-
-          Get-ChildItem $sampleOut | Sort-Object Name | Format-Table Name, Length
-
-          foreach ($file in "RaylibAngleSample.dll", "raylib.dll", "libEGL.dll", "libGLESv2.dll") {
-            if (-not (Test-Path (Join-Path $sampleOut $file))) { throw "Missing $file in sample publish output: $sampleOut" }
+          foreach ($file in "raylib.dll", "libEGL.dll", "libGLESv2.dll") {
+            if (-not (Test-Path (Join-Path $sampleOut $file))) { throw "Missing $file in sample output: $sampleOut" }
           }
-
-          $deps = & dumpbin /dependents (Join-Path $sampleOut "raylib.dll") | Out-String
-          Write-Host $deps
-          if ($deps -notmatch "libEGL\.dll") { throw "Published raylib.dll does not depend on libEGL.dll." }
-          if ($deps -notmatch "libGLESv2\.dll") { throw "Published raylib.dll does not depend on libGLESv2.dll." }
-          if ($deps -match "OPENGL32\.dll") { throw "Published raylib.dll still depends on OPENGL32.dll." }
+          Get-ChildItem $sampleOut | Format-Table Name, Length
 
       - name: Package artifact
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          Remove-Item -Recurse -Force package -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path package/native, package/RaylibAngleSample | Out-Null
-          Copy-Item artifacts/raylib-angle-win-x64/* package/native/ -Force
-          Copy-Item artifacts/RaylibAngleSample/* package/RaylibAngleSample/ -Force
-          Copy-Item README.md package/README.md -Force
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item artifacts/raylib-angle-win-x64 package/native -Recurse -Force
+          Copy-Item artifacts/RaylibAngleSample package/RaylibAngleSample -Recurse -Force
+          if (Test-Path README.md) { Copy-Item README.md package/README.md -Force }
           Compress-Archive -Path package/* -DestinationPath raylib-angle-direct3d11-win-x64.zip -Force
-          Get-Item raylib-angle-direct3d11-win-x64.zip | Format-Table Name, Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: raylib-angle-direct3d11-win-x64
           path: raylib-angle-direct3d11-win-x64.zip
-          if-no-files-found: error

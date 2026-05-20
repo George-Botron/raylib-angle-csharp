@@ -54,7 +54,7 @@ The workflow does this:
 2. Clones raylib.
 3. Patches raylib's Windows Desktop CMake link step with a whitespace-tolerant regex so `OPENGL_VERSION="ES 2.0"` links to `libEGL.lib` and `libGLESv2.lib`, not `opengl32.lib`.
 4. Builds `raylib.dll` as a shared library.
-5. Verifies `raylib.dll` depends on `libEGL.dll` and `libGLESv2.dll`.
+5. Verifies `raylib.dll` directly depends on `libGLESv2.dll`, does not depend on `OPENGL32.dll`, and packages `libEGL.dll` beside it.
 6. Builds the included raylib-cs sample.
 7. Uploads a zip artifact.
 
@@ -137,7 +137,13 @@ From a Visual Studio Developer PowerShell:
 dumpbin /dependents .\raylib.dll
 ```
 
-Expected:
+Expected direct dependency:
+
+```text
+libGLESv2.dll
+```
+
+Expected packaged runtime files beside `raylib.dll`:
 
 ```text
 libEGL.dll
@@ -150,7 +156,7 @@ Unexpected for this build:
 OPENGL32.dll
 ```
 
-If `OPENGL32.dll` appears, you are using a normal desktop OpenGL raylib build, not the ANGLE build.
+`libEGL.dll` may not appear as a direct dependency of `raylib.dll` in `dumpbin /dependents`. That is acceptable for this build. The important checks are that `raylib.dll` imports `libGLESv2.dll`, does not import `OPENGL32.dll`, and `libEGL.dll` is packaged beside the executable.
 
 ### Verify while running
 
@@ -171,8 +177,8 @@ This build usually starts more reliably over RDP than desktop OpenGL because it 
 
 - This is Windows x64 only.
 - This uses raylib's GLFW desktop platform with OpenGL ES 2.0 context creation.
-- ANGLE normally chooses Direct3D11 on Windows when available.
-- For exact backend forcing, such as requiring D3D11 instead of another ANGLE backend, raylib would need native EGL display initialization changes. This repo relies on ANGLE's normal Windows behavior.
+- This repo patches raylib to request ANGLE's D3D11 backend through GLFW using `GLFW_ANGLE_PLATFORM_TYPE_D3D11`.
+- Confirm the runtime path with Process Explorer, Visual Studio Modules, or Process Monitor. You should see `libEGL.dll`, `libGLESv2.dll`, `d3d11.dll`, and `dxgi.dll` loaded.
 - Keep the native files beside the `.exe`; do not put them only in the source folder.
 - The raylib-cs NuGet may copy its own `raylib.dll`. Your custom `raylib.dll` must be the one in the final output directory.
 

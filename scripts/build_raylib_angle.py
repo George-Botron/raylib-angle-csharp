@@ -120,31 +120,46 @@ def patch_glfw_angle_hint(raylib_dir: Path) -> Path:
             print(f"{path} already requests GLFW_ANGLE_PLATFORM_TYPE_D3D11.")
             return path
 
-    insertion = """#if defined(GRAPHICS_API_OPENGL_ES2) || defined(GRAPHICS_API_OPENGL_ES3)
-    // Force ANGLE to use its Direct3D 11 backend on Windows when raylib is built as OpenGL ES.
-    glfwInitHint(GLFW_ANGLE_PLATFORM_TYPE, GLFW_ANGLE_PLATFORM_TYPE_D3D11);
-#endif
+    insertion_lines = [
+        "#if (defined(GRAPHICS_API_OPENGL_ES2) || defined(GRAPHICS_API_OPENGL_ES3)) && defined(_WIN32)",
+        "    // Force ANGLE to use its Direct3D 11 backend on Windows when raylib is built as OpenGL ES.",
+        "    glfwInitHint(GLFW_ANGLE_PLATFORM_TYPE, GLFW_ANGLE_PLATFORM_TYPE_D3D11);",
+        "#endif",
+        "",
+    ]
 
-    """
+    # Insert immediately before the raylib platform's glfwInit() call.  raylib 5.5/6.0
+    # place that call in src/platforms/rcore_desktop_glfw.c and it is commonly written
+    # as an if (!glfwInit()) guard, not as a standalone "glfwInit();" statement.  Do
+    # not require a semicolon; patch the line containing the real call.
+    glfw_init_call = re.compile(r"\bglfwInit\s*\(\s*\)")
+    ignored_calls = (
+        "glfwInitHint",
+        "glfwInitAllocator",
+        "glfwInitVulkanLoader",
+    )
 
-    # Insert immediately before the raylib platform's glfwInit(...) call.  This is the
-    # correct lifecycle point because GLFW init hints must be set before glfwInit().
-    init_call = re.compile(r"(?m)^(?P<indent>\s*)(?P<call>(?:if\s*\([^\n]*\)\s*)?glfwInit\s*\([^;]*\)\s*;)")
     for path in candidate_glfw_sources(raylib_dir):
         text = read_text(path)
         if "glfwInit" not in text:
             continue
-        match = init_call.search(text)
-        if not match:
-            continue
-        indent = match.group("indent")
-        patched_insertion = "\n".join((indent + line if line else line) for line in insertion.splitlines())
-        new_text = text[: match.start()] + patched_insertion + text[match.start():]
-        write_text(path, new_text)
-        print(f"Patched {path} to request GLFW_ANGLE_PLATFORM_TYPE_D3D11 before glfwInit().")
-        return path
 
-    print("Could not find a patchable glfwInit(...) call. Diagnostics:")
+        lines = text.splitlines(keepends=True)
+        for index, line in enumerate(lines):
+            if any(ignored in line for ignored in ignored_calls):
+                continue
+            if not glfw_init_call.search(line):
+                continue
+
+            indent = re.match(r"^[ \t]*", line).group(0)
+            insertion = "".join(indent + item + "\n" for item in insertion_lines)
+            lines.insert(index, insertion)
+            write_text(path, "".join(lines))
+            print(f"Patched {path} to request GLFW_ANGLE_PLATFORM_TYPE_D3D11 before glfwInit().")
+            print(f"Patch inserted before line {index + 1}: {line.strip()}")
+            return path
+
+    print("Could not find a patchable glfwInit() call. Diagnostics:")
     for path in candidate_glfw_sources(raylib_dir):
         text = read_text(path)
         if "glfw" in text.lower():

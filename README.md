@@ -42,18 +42,22 @@ Go to:
 Actions -> Build raylib ANGLE Direct3D11 for raylib-cs -> Run workflow
 ```
 
-The default raylib ref is:
+The workflow supports selecting either:
 
 ```text
 6.0
+5.5
 ```
+
+The default is `6.0`. Use `5.5` if your raylib-cs/native interop target requires raylib 5.5-compatible native exports.
 
 The workflow does this:
 
 1. Installs ANGLE using `vcpkg install angle:x64-windows`.
 2. Clones raylib.
 3. Patches raylib's Windows Desktop CMake link step with a whitespace-tolerant regex so `OPENGL_VERSION="ES 2.0"` links to `libEGL.lib` and `libGLESv2.lib`, not `opengl32.lib`.
-4. Builds `raylib.dll` as a shared library.
+4. Patches the raylib GLFW platform source that actually contains `glfwInit()` (`src/platforms/rcore_desktop_glfw.c` in raylib 5.5/6.0) to request `GLFW_ANGLE_PLATFORM_TYPE_D3D11` before `glfwInit()`.
+5. Builds `raylib.dll` as a shared library.
 5. Verifies `raylib.dll` directly depends on `libGLESv2.dll`, does not depend on `OPENGL32.dll`, and packages `libEGL.dll` beside it.
 6. Builds the included raylib-cs sample.
 7. Uploads a zip artifact.
@@ -205,9 +209,14 @@ Modern Windows usually has it in `System32`, but self-contained app folders can 
 First verify dependencies with `dumpbin`. Then use Process Monitor to check whether Windows failed to load a DLL. Common causes are architecture mismatch, overwritten `raylib.dll`, missing ANGLE DLLs, or using a raylib version whose CMake layout changed and the patch did not apply correctly.
 
 
-## Maintainer note: previous patch failure
+## Maintainer notes: previous patch failures
 
-An earlier version of `scripts/build_raylib_angle.py` looked for one exact single-line CMake string in `cmake/LibraryConfigurations.cmake`. That failed on raylib 5.5/6.0 when the same block was formatted differently. The current script uses a whitespace-tolerant regex and prints nearby CMake lines if patching fails again.
+The build has two intentional patches and both are now targeted at the real raylib 5.5/6.0 layout:
+
+1. `cmake/LibraryConfigurations.cmake` is patched so Windows Desktop + `OPENGL_VERSION="ES 2.0"` links against ANGLE's `libGLESv2.lib` / `libEGL.lib`, not `opengl32.lib`.
+2. `src/platforms/rcore_desktop_glfw.c` is patched before the real `glfwInit()` call so GLFW requests `GLFW_ANGLE_PLATFORM_TYPE_D3D11`. Earlier attempts incorrectly searched `src/rcore.c` or only matched a standalone `glfwInit();` line; raylib 5.5/6.0 use the platform-split backend and can write the call as `if (!glfwInit())`.
+
+The verification step checks the output, not just the patch text: `raylib.dll` must import `libGLESv2.dll`, must not import `OPENGL32.dll`, and the packaged runtime must contain `libEGL.dll` / `libGLESv2.dll`.
 
 
 ## Notes about the Python build scripts

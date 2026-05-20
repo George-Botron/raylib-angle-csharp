@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       raylib_ref:
-        description: "raylib git ref/tag to build"
+        description: "raylib version to build"
         required: false
         default: "6.0"
+        type: choice
+        options:
+          - "6.0"
+          - "5.5"
   push:
     branches: [ main, master ]
 
@@ -67,8 +71,6 @@ jobs:
         with:
           path: |
             C:\vcpkg\installed
-            C:\vcpkg\packages
-            C:\vcpkg\buildtrees
             C:\vcpkg\downloads
             C:\Users\runneradmin\AppData\Local\vcpkg\archives
           key: vcpkg-angle-${{ runner.os }}-x64-windows-chromium-7258-2
@@ -93,8 +95,6 @@ jobs:
         with:
           path: |
             C:\vcpkg\installed
-            C:\vcpkg\packages
-            C:\vcpkg\buildtrees
             C:\vcpkg\downloads
             C:\Users\runneradmin\AppData\Local\vcpkg\archives
           key: vcpkg-angle-${{ runner.os }}-x64-windows-chromium-7258-2

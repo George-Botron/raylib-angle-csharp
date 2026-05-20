@@ -1,243 +1,127 @@
-param(
-    [string]$RaylibRef = "6.0",
-    [string]$RaylibRepo = "https://github.com/raysan5/raylib.git",
-    [string]$VcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT",
-    [string]$Triplet = "x64-windows",
-    [string]$Configuration = "Release",
-    [string]$WorkDir = "$PSScriptRoot/../_build",
-    [string]$OutDir = "$PSScriptRoot/../artifacts/raylib-angle-win-x64"
-)
+name: Build raylib ANGLE Direct3D11 for raylib-cs
 
-$ErrorActionPreference = "Stop"
+on:
+  workflow_dispatch:
+    inputs:
+      raylib_ref:
+        description: "raylib tag/branch/commit to build"
+        required: true
+        default: "6.0"
+  push:
+    branches: [ main, master ]
+    paths:
+      - ".github/workflows/build-raylib-angle.yml"
+      - "scripts/**"
+      - "src/**"
+      - "README.md"
+      - "Directory.Build.props"
 
-function Assert-File([string]$Path) {
-    if (!(Test-Path $Path)) {
-        throw "Missing required file: $Path"
-    }
-}
+env:
+  VCPKG_ROOT: C:\vcpkg
+  VCPKG_INSTALLATION_ROOT: C:\vcpkg
 
-function Invoke-LoggedCommand {
-    param(
-        [Parameter(Mandatory = $true)][string]$Exe,
-        [Parameter(Mandatory = $true)][string[]]$CommandArgs
-    )
+jobs:
+  build-win-x64:
+    name: Build Windows x64 ANGLE raylib.dll and C# sample
+    runs-on: windows-latest
 
-    Write-Host "> $Exe $($CommandArgs -join ' ')"
-    & $Exe @CommandArgs
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code ${LASTEXITCODE}: $Exe $($CommandArgs -join ' ')"
-    }
-}
+      - name: Enable MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
-function Patch-RaylibCMakeForAngle {
-    param(
-        [Parameter(Mandatory = $true)][string]$RaylibDir
-    )
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            10.0.x
 
-    $libraryConfig = Join-Path $RaylibDir "cmake/LibraryConfigurations.cmake"
-    Assert-File $libraryConfig
+      - name: Setup vcpkg cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\vcpkg\installed
+            C:\vcpkg\packages
+            C:\vcpkg\buildtrees
+            C:\vcpkg\downloads
+            C:\Users\runneradmin\AppData\Local\vcpkg\archives
+          key: vcpkg-angle-${{ runner.os }}-${{ hashFiles('.github/workflows/build-raylib-angle.yml', 'scripts/**') }}
+          restore-keys: |
+            vcpkg-angle-${{ runner.os }}-
 
-    $text = Get-Content $libraryConfig -Raw
-    $marker = 'Desktop Windows OpenGL ES selected: linking raylib against ANGLE libEGL/libGLESv2'
+      - name: Install ANGLE from vcpkg
+        shell: pwsh
+        run: |
+          if (-not (Test-Path C:\vcpkg\vcpkg.exe)) {
+            git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+            C:\vcpkg\bootstrap-vcpkg.bat
+          }
+          C:\vcpkg\vcpkg.exe install angle:x64-windows --vcpkg-root C:\vcpkg
 
-    $pattern = '(?s)elseif\s*\(\s*WIN32\s*\)\s*add_definitions\s*\(\s*-D_CRT_SECURE_NO_WARNINGS\s*\)\s*find_package\s*\(\s*OpenGL\s+QUIET\s*\)\s*set\s*\(\s*LIBS_PRIVATE\s+\$\{OPENGL_LIBRARIES\}\s+winmm\s*\)'
+      - name: Build native raylib.dll linked to ANGLE
+        shell: pwsh
+        run: |
+          $ref = "${{ github.event.inputs.raylib_ref }}"
+          if ([string]::IsNullOrWhiteSpace($ref)) { $ref = "6.0" }
+          ./scripts/build-raylib-angle.ps1 -RaylibRef $ref -VcpkgRoot C:\vcpkg -Triplet x64-windows
 
-    $replacement = @'
-elseif (WIN32)
-    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
-    if (${OPENGL_VERSION} MATCHES "ES 2.0|ES 3.0")
-        message(STATUS "Desktop Windows OpenGL ES selected: linking raylib against ANGLE libEGL/libGLESv2")
-        find_path(ANGLE_INCLUDE_DIR EGL/egl.h REQUIRED)
-        find_library(ANGLE_EGL_LIBRARY NAMES libEGL EGL REQUIRED)
-        find_library(ANGLE_GLESV2_LIBRARY NAMES libGLESv2 GLESv2 REQUIRED)
-        include_directories(${ANGLE_INCLUDE_DIR})
-        add_definitions(-DGLFW_INCLUDE_ES2)
-        set(OPENGL_INCLUDE_DIR ${ANGLE_INCLUDE_DIR})
-        set(LIBS_PRIVATE ${ANGLE_GLESV2_LIBRARY} ${ANGLE_EGL_LIBRARY} winmm)
-    else()
-        find_package(OpenGL QUIET)
-        set(LIBS_PRIVATE ${OPENGL_LIBRARIES} winmm)
-    endif()
-'@
+      - name: Verify native raylib.dll dependencies
+        shell: pwsh
+        run: ./scripts/verify-angle-raylib.ps1
 
-    if ($text -match [regex]::Escape($marker)) {
-        Write-Host "raylib CMake file already contains ANGLE patch marker."
-        return
-    }
+      - name: Copy native files into C# sample
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src/RaylibAngleSample/native/win-x64 | Out-Null
+          Copy-Item artifacts/raylib-angle-win-x64/* src/RaylibAngleSample/native/win-x64/ -Force
 
-    if ([regex]::IsMatch($text, $pattern)) {
-        $patched = [regex]::Replace($text, $pattern, $replacement, 1)
-        Set-Content -Path $libraryConfig -Value $patched -NoNewline
-        Write-Host "Patched $libraryConfig for Windows Desktop + OpenGL ES + ANGLE."
-        return
-    }
+      - name: Build C# raylib-cs sample
+        shell: pwsh
+        run: dotnet build src/RaylibAngleSample/RaylibAngleSample.csproj -c Release -r win-x64 --self-contained false
 
-    Write-Host "Could not find the expected WIN32 OpenGL link block in $libraryConfig. Nearby WIN32/OpenGL lines:" -ForegroundColor Yellow
-    Select-String -Path $libraryConfig -Pattern "WIN32|OPENGL_LIBRARIES|LIBS_PRIVATE|OpenGL|GLES|EGL" -Context 2,2 | ForEach-Object {
-        $_.ToString()
-    }
+      - name: Verify sample output contains ANGLE files
+        shell: pwsh
+        run: |
+          $sampleRoot = "src/RaylibAngleSample/bin"
+          $sampleOut = Get-ChildItem -Path $sampleRoot -Directory -Recurse |
+            Where-Object { Test-Path (Join-Path $_.FullName "RaylibAngleSample.dll") } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
 
-    throw "Could not patch $libraryConfig. raylib CMake file layout changed; update the patch."
-}
+          if ([string]::IsNullOrWhiteSpace($sampleOut)) {
+            Write-Host "Searched under: $sampleRoot"
+            Get-ChildItem $sampleRoot -Recurse -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table -AutoSize
+            throw "Could not find RaylibAngleSample.dll under $sampleRoot."
+          }
 
-function Patch-RaylibGlfwForAngleD3D11 {
-    param(
-        [Parameter(Mandatory = $true)][string]$RaylibDir
-    )
+          Write-Host "Sample output directory: $sampleOut"
+          Get-ChildItem $sampleOut | Format-Table Name, Length
 
-    $platformFile = Join-Path $RaylibDir "src/platforms/rcore_desktop_glfw.c"
-    Assert-File $platformFile
+          foreach ($file in "raylib.dll", "libEGL.dll", "libGLESv2.dll") {
+            if (-not (Test-Path (Join-Path $sampleOut $file))) { throw "Missing $file in sample output: $sampleOut" }
+          }
 
-    $text = Get-Content $platformFile -Raw
-    $marker = "raylib-angle-csharp: force ANGLE Direct3D11 backend"
+          "RAYLIB_SAMPLE_OUT=$sampleOut" | Add-Content -Path $env:GITHUB_ENV
 
-    if ($text -match [regex]::Escape($marker)) {
-        Write-Host "raylib GLFW platform file already contains ANGLE D3D11 init-hint patch."
-        return
-    }
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RAYLIB_SAMPLE_OUT)) { throw "RAYLIB_SAMPLE_OUT was not set by verification step." }
+          if (-not (Test-Path $env:RAYLIB_SAMPLE_OUT)) { throw "Sample output not found: $env:RAYLIB_SAMPLE_OUT" }
 
-    # GLFW_ANGLE_PLATFORM_TYPE is an init hint, not a window hint.
-    # It must be set before glfwInit(). raylib owns glfwInit(), so the native source must be patched.
-    $pattern = '(?m)^(\s*)int\s+result\s*=\s*glfwInit\s*\(\s*\);'
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item artifacts/raylib-angle-win-x64 package/native -Recurse -Force
+          Copy-Item $env:RAYLIB_SAMPLE_OUT package/RaylibAngleSample -Recurse -Force
+          Copy-Item README.md package/README.md -Force
+          Compress-Archive -Path package/* -DestinationPath raylib-angle-direct3d11-win-x64.zip -Force
 
-    if (![regex]::IsMatch($text, $pattern)) {
-        Write-Host "Could not find 'int result = glfwInit();' in $platformFile. Nearby GLFW init lines:" -ForegroundColor Yellow
-        Select-String -Path $platformFile -Pattern "glfwInit|glfwInitHint|glfwSetErrorCallback" -Context 3,3 | ForEach-Object {
-            $_.ToString()
-        }
-
-        throw "Could not patch $platformFile to force ANGLE D3D11."
-    }
-
-    $replacement = @'
-$1#if defined(GRAPHICS_API_OPENGL_ES2) && defined(_WIN32) && defined(GLFW_ANGLE_PLATFORM_TYPE) && defined(GLFW_ANGLE_PLATFORM_TYPE_D3D11)
-$1    // raylib-angle-csharp: force ANGLE Direct3D11 backend.
-$1    // GLFW requires this as an init hint before glfwInit().
-$1    glfwInitHint(GLFW_ANGLE_PLATFORM_TYPE, GLFW_ANGLE_PLATFORM_TYPE_D3D11);
-$1#endif
-$1int result = glfwInit();
-'@
-
-    $patched = [regex]::Replace($text, $pattern, $replacement, 1)
-    Set-Content -Path $platformFile -Value $patched -NoNewline
-
-    Write-Host "Patched $platformFile to request ANGLE Direct3D11 before glfwInit()."
-}
-
-$WorkDir = [IO.Path]::GetFullPath($WorkDir)
-$OutDir = [IO.Path]::GetFullPath($OutDir)
-$RaylibDir = Join-Path $WorkDir "raylib"
-$BuildDir = Join-Path $WorkDir "raylib-build-angle"
-
-New-Item -ItemType Directory -Force -Path $WorkDir, $OutDir | Out-Null
-
-if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
-    throw "VcpkgRoot is empty. Pass -VcpkgRoot or set VCPKG_INSTALLATION_ROOT."
-}
-
-if (!(Test-Path $VcpkgRoot)) {
-    throw "VcpkgRoot not found: $VcpkgRoot"
-}
-
-$AngleInstalled = Join-Path $VcpkgRoot "installed/$Triplet"
-$AngleInclude = Join-Path $AngleInstalled "include"
-$AngleLib = Join-Path $AngleInstalled "lib"
-$AngleBin = Join-Path $AngleInstalled "bin"
-
-Assert-File (Join-Path $AngleInclude "EGL/egl.h")
-Assert-File (Join-Path $AngleInclude "GLES2/gl2.h")
-Assert-File (Join-Path $AngleLib "libEGL.lib")
-Assert-File (Join-Path $AngleLib "libGLESv2.lib")
-Assert-File (Join-Path $AngleBin "libEGL.dll")
-Assert-File (Join-Path $AngleBin "libGLESv2.dll")
-
-if (Test-Path $RaylibDir) {
-    Remove-Item -Recurse -Force $RaylibDir
-}
-
-Invoke-LoggedCommand "git" @(
-    "clone",
-    "--depth", "1",
-    "--branch", $RaylibRef,
-    $RaylibRepo,
-    $RaylibDir
-)
-
-Patch-RaylibCMakeForAngle -RaylibDir $RaylibDir
-Patch-RaylibGlfwForAngleD3D11 -RaylibDir $RaylibDir
-
-Remove-Item -Recurse -Force $BuildDir -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
-
-$toolchain = Join-Path $VcpkgRoot "scripts/buildsystems/vcpkg.cmake"
-Assert-File $toolchain
-
-Invoke-LoggedCommand "cmake" @(
-    "-S", $RaylibDir,
-    "-B", $BuildDir,
-    "-G", "Visual Studio 17 2022",
-    "-A", "x64",
-    "-DCMAKE_TOOLCHAIN_FILE=$toolchain",
-    "-DVCPKG_TARGET_TRIPLET=$Triplet",
-    "-DCMAKE_PREFIX_PATH=$AngleInstalled",
-    "-DCMAKE_INCLUDE_PATH=$AngleInclude",
-    "-DCMAKE_LIBRARY_PATH=$AngleLib",
-    "-DPLATFORM=Desktop",
-    "-DOPENGL_VERSION=ES 2.0",
-    "-DBUILD_SHARED_LIBS=ON",
-    "-DBUILD_EXAMPLES=OFF",
-    "-DUSE_AUDIO=ON",
-    "-DCMAKE_BUILD_TYPE=$Configuration"
-)
-
-Invoke-LoggedCommand "cmake" @(
-    "--build", $BuildDir,
-    "--config", $Configuration,
-    "--parallel"
-)
-
-$raylibDll = Get-ChildItem $BuildDir -Recurse -Filter raylib.dll |
-    Where-Object { $_.FullName -match "\\$Configuration\\" } |
-    Select-Object -First 1
-
-if (!$raylibDll) {
-    $raylibDll = Get-ChildItem $BuildDir -Recurse -Filter raylib.dll | Select-Object -First 1
-}
-
-if (!$raylibDll) {
-    throw "raylib.dll was not produced."
-}
-
-Copy-Item $raylibDll.FullName (Join-Path $OutDir "raylib.dll") -Force
-Copy-Item (Join-Path $AngleBin "libEGL.dll") (Join-Path $OutDir "libEGL.dll") -Force
-Copy-Item (Join-Path $AngleBin "libGLESv2.dll") (Join-Path $OutDir "libGLESv2.dll") -Force
-
-$d3dCompiler = Join-Path $AngleBin "d3dcompiler_47.dll"
-
-if (Test-Path $d3dCompiler) {
-    Copy-Item $d3dCompiler (Join-Path $OutDir "d3dcompiler_47.dll") -Force
-} else {
-    $systemD3D = Join-Path $env:WINDIR "System32/d3dcompiler_47.dll"
-    if (Test-Path $systemD3D) {
-        Copy-Item $systemD3D (Join-Path $OutDir "d3dcompiler_47.dll") -Force
-    }
-}
-
-$buildInfo = @"
-raylib.ref=$RaylibRef
-platform=Desktop
-opengl.version=ES 2.0
-graphics=GRAPHICS_API_OPENGL_ES2
-context.api=GLFW_EGL_CONTEXT_API
-client.api=GLFW_OPENGL_ES_API
-angle.backend=GLFW_ANGLE_PLATFORM_TYPE_D3D11
-expected.raylib.import=libGLESv2.dll
-expected.runtime.dynamic=libEGL.dll
-note=libEGL.dll is loaded dynamically by GLFW's EGL backend; it is not required to appear in dumpbin /dependents raylib.dll.
-"@
-
-Set-Content -Path (Join-Path $OutDir "build-info.txt") -Value $buildInfo -NoNewline
-
-Get-ChildItem $OutDir | Format-Table Name, Length
-Write-Host "ANGLE raylib output: $OutDir"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raylib-angle-direct3d11-win-x64
+          path: raylib-angle-direct3d11-win-x64.zip
+          if-no-files-found: error

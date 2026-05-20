@@ -30,29 +30,18 @@ jobs:
           $ErrorActionPreference = "Stop"
           foreach ($path in @(
             ".github/workflows/build-raylib-angle.yml",
-            "scripts/build-raylib-angle.ps1",
-            "scripts/verify-angle-raylib.ps1",
+            "scripts/build_raylib_angle.py",
+            "scripts/verify_angle_raylib.py",
             "src/RaylibAngleSample/RaylibAngleSample.csproj"
           )) {
             if (-not (Test-Path $path)) { throw "Missing required file: $path" }
           }
-
-          $buildText = Get-Content "scripts/build-raylib-angle.ps1" -Raw
-          $verifyText = Get-Content "scripts/verify-angle-raylib.ps1" -Raw
-
-          if ($buildText -match '(?m)^\s*-\s+name\s*:|(?m)^\s*jobs\s*:') { throw "scripts/build-raylib-angle.ps1 contains YAML, not PowerShell." }
-          if ($verifyText -match 'does not depend on libEGL\.dll') { throw "scripts/verify-angle-raylib.ps1 still has the old broken libEGL direct-import check." }
-          if ($buildText -notmatch 'GLFW_ANGLE_PLATFORM_TYPE_D3D11') { throw "scripts/build-raylib-angle.ps1 must patch raylib to request GLFW_ANGLE_PLATFORM_TYPE_D3D11." }
-
-          foreach ($path in @("scripts/build-raylib-angle.ps1", "scripts/verify-angle-raylib.ps1")) {
-            $tokens = $null
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
-            if ($errors -and $errors.Count -gt 0) {
-              $errors | ForEach-Object { Write-Host $_.Message }
-              throw "PowerShell parse failed: $path"
-            }
-          }
+          python -m py_compile scripts/build_raylib_angle.py scripts/verify_angle_raylib.py
+          $buildText = Get-Content "scripts/build_raylib_angle.py" -Raw
+          $verifyText = Get-Content "scripts/verify_angle_raylib.py" -Raw
+          if ($buildText -match '(?m)^\s*-\s+name\s*:|(?m)^\s*jobs\s*:') { throw "scripts/build_raylib_angle.py contains YAML, not Python." }
+          if ($verifyText -match 'does not depend on libEGL\.dll') { throw "scripts/verify_angle_raylib.py still has the old broken libEGL direct-import check." }
+          if ($buildText -notmatch 'GLFW_ANGLE_PLATFORM_TYPE_D3D11') { throw "scripts/build_raylib_angle.py must patch raylib to request GLFW_ANGLE_PLATFORM_TYPE_D3D11." }
           Write-Host "Repository file validation passed."
 
       - name: Setup MSVC developer shell
@@ -113,11 +102,11 @@ jobs:
         run: |
           $ref = "${{ github.event.inputs.raylib_ref }}"
           if ([string]::IsNullOrWhiteSpace($ref)) { $ref = "6.0" }
-          ./scripts/build-raylib-angle.ps1 -RaylibRef $ref -VcpkgRoot C:\vcpkg -Triplet x64-windows
+          python scripts/build_raylib_angle.py --raylib-ref $ref --vcpkg-root C:\vcpkg --triplet x64-windows
 
       - name: Verify native raylib ANGLE output
         shell: pwsh
-        run: ./scripts/verify-angle-raylib.ps1
+        run: python scripts/verify_angle_raylib.py
 
       - name: Copy native DLLs into sample project
         shell: pwsh

@@ -207,4 +207,25 @@ First verify dependencies with `dumpbin`. Then use Process Monitor to check whet
 
 ## Maintainer note: previous patch failure
 
-An earlier version of `scripts/build-raylib-angle.ps1` looked for one exact single-line CMake string in `cmake/LibraryConfigurations.cmake`. That failed on raylib 5.5/6.0 when the same block was formatted differently. The current script uses a whitespace-tolerant regex and prints nearby CMake lines if patching fails again.
+An earlier version of `scripts/build_raylib_angle.py` looked for one exact single-line CMake string in `cmake/LibraryConfigurations.cmake`. That failed on raylib 5.5/6.0 when the same block was formatted differently. The current script uses a whitespace-tolerant regex and prints nearby CMake lines if patching fails again.
+
+
+## Notes about the Python build scripts
+
+The build logic is in Python now, not PowerShell:
+
+```text
+scripts/build_raylib_angle.py
+scripts/verify_angle_raylib.py
+```
+
+The root fix is that the D3D11 hint patch no longer assumes raylib's GLFW code lives in `src/rcore.c`. raylib 6.0 uses the platform-split backend under `src/platforms/rcore_desktop_glfw.c`; the Python script searches raylib platform sources for the actual `glfwInit(...)` call and inserts `glfwInitHint(GLFW_ANGLE_PLATFORM_TYPE, GLFW_ANGLE_PLATFORM_TYPE_D3D11);` immediately before it.
+
+Correct native verification:
+
+```text
+raylib.dll must import libGLESv2.dll
+raylib.dll must not import OPENGL32.dll
+libEGL.dll must be packaged beside raylib.dll
+libEGL.dll does not have to appear as a direct dumpbin dependency of raylib.dll
+```
